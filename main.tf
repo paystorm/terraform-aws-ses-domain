@@ -11,6 +11,10 @@ locals {
 # SES Domain Verification
 #
 
+data "cloudflare_zone" "main" {
+  name = local.stripped_domain_name
+}
+
 resource "aws_ses_domain_identity" "main" {
   domain = local.stripped_domain_name
 }
@@ -30,6 +34,16 @@ resource "aws_route53_record" "ses_verification" {
   type    = "TXT"
   ttl     = "600"
   records = concat([aws_ses_domain_identity.main.verification_token], var.extra_ses_records)
+}
+
+resource "cloudflare_record" "ses_verification" {
+  for_each = toset(concat([aws_ses_domain_identity.main.verification_token], var.extra_ses_records))
+
+  zone_id = data.cloudflare_zone.main.id
+  name    = "_amazonses.${aws_ses_domain_identity.main.id}"
+  type    = "TXT"
+  ttl     = "600"
+  value   = each.value
 }
 
 #
@@ -54,6 +68,20 @@ resource "aws_route53_record" "dkim" {
   records = ["${element(aws_ses_domain_dkim.main.dkim_tokens, count.index)}.dkim.amazonses.com"]
 }
 
+resource "cloudflare_record" "dkim" {
+  count = 3
+
+  zone_id = data.cloudflare_zone.main.id
+  name = format(
+    "%s._domainkey.%s",
+    element(aws_ses_domain_dkim.main.dkim_tokens, count.index),
+    var.domain_name,
+  )
+  type    = "CNAME"
+  ttl     = "600"
+  value   = "${element(aws_ses_domain_dkim.main.dkim_tokens, count.index)}.dkim.amazonses.com"
+}
+
 #
 # SES MAIL FROM Domain
 #
@@ -74,6 +102,16 @@ resource "aws_route53_record" "spf_mail_from" {
   records = ["v=spf1 include:amazonses.com -all"]
 }
 
+resource "cloudflare_record" "spf_mail_from" {
+  count = var.enable_spf_record ? 1 : 0
+
+  zone_id = data.cloudflare_zone.main.id
+  name    = aws_ses_domain_mail_from.main.mail_from_domain
+  type    = "TXT"
+  ttl     = "600"
+  value   = "v=spf1 include:amazonses.com -all"
+}
+
 resource "aws_route53_record" "spf_domain" {
   count = var.enable_spf_record ? 1 : 0
 
@@ -82,6 +120,16 @@ resource "aws_route53_record" "spf_domain" {
   type    = "TXT"
   ttl     = "600"
   records = ["v=spf1 include:amazonses.com -all"]
+}
+
+resource "cloudflare_record" "spf_domain" {
+  count = var.enable_spf_record ? 1 : 0
+
+  zone_id = data.cloudflare_zone.main.id
+  name    = var.domain_name
+  type    = "TXT"
+  ttl     = "600"
+  value   = "v=spf1 include:amazonses.com -all"
 }
 
 # Sending MX Record
@@ -96,6 +144,15 @@ resource "aws_route53_record" "mx_send_mail_from" {
   records = ["10 feedback-smtp.${data.aws_region.current.name}.amazonses.com"]
 }
 
+resource "cloudflare_record" "mx_send_mail_from" {
+  zone_id  = data.cloudflare_zone.main.id
+  name     = aws_ses_domain_mail_from.main.mail_from_domain
+  type     = "MX"
+  ttl      = "600"
+  priority = "10"
+  value    = "feedback-smtp.${data.aws_region.current.name}.amazonses.com"
+}
+
 # Receiving MX Record
 resource "aws_route53_record" "mx_receive" {
   count = var.enable_incoming_email ? 1 : 0
@@ -105,6 +162,17 @@ resource "aws_route53_record" "mx_receive" {
   type    = "MX"
   ttl     = "600"
   records = ["10 inbound-smtp.${data.aws_region.current.name}.amazonaws.com"]
+}
+
+resource "cloudflare_record" "mx_receive" {
+  count = var.enable_incoming_email ? 1 : 0
+
+  name     = var.domain_name
+  zone_id  = data.cloudflare_zone.main.id
+  type     = "MX"
+  ttl      = "600"
+  priority = "10"
+  value    = "inbound-smtp.${data.aws_region.current.name}.amazonaws.com"
 }
 
 #
@@ -118,6 +186,13 @@ resource "aws_route53_record" "txt_dmarc" {
   records = ["v=DMARC1; p=${var.dmarc_p}; rua=mailto:${var.dmarc_rua};"]
 }
 
+resource "cloudflare_record" "txt_dmarc" {
+  zone_id = data.cloudflare_zone.main.id
+  name    = "_dmarc.${var.domain_name}"
+  type    = "TXT"
+  ttl     = "600"
+  value   = "v=DMARC1; p=${var.dmarc_p}; rua=mailto:${var.dmarc_rua};"
+}
 #
 # SES Receipt Rule
 #
